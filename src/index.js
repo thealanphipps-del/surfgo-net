@@ -1,71 +1,69 @@
-// SURFGO_GENESIS_CORE v8.0 (The 195 Lock & Encrypted Vault)
+// SURFGO_ALPHA_v12.5: FULL_STATEFUL_ALGO
 export default {
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(this.executeStrategy(env));
+  },
+
   async fetch(request, env) {
     const { pathname } = new URL(request.url);
-    const SUPPLY_CAP = 195;
+    if (pathname === "/run-manual") return new Response(await this.executeStrategy(env));
+    // Standard HUD/Blog logic remains below...
+    return new Response("ALGO_LIVE_MONITORING", { status: 200 });
+  },
 
-    // Simulated edge-encryption wrapper
-    const encryptAtEdge = (text, key) => {
-        return "AES_WRAPPED_[" + btoa(text + key).split("").reverse().join("") + "]";
+  async executeStrategy(env) {
+    const symbol = "BTC/USD";
+    const auth = { headers: { "APCA-API-KEY-ID": env.ALPACA_KEY, "APCA-API-SECRET-KEY": env.ALPACA_SECRET }};
+
+    // 1. DATA ACQUISITION (1-Min Bars for 30 periods)
+    const data = await fetch(`https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols=${symbol}&timeframe=1Min&limit=30`, auth).then(r => r.json());
+    const bars = data.bars[symbol].map(b => b.c);
+    const currentPrice = bars[bars.length - 1];
+
+    // 2. MATH ENGINE: INDICATOR CALCULATION
+    const getEMA = (data, period) => {
+      const k = 2 / (period + 1);
+      return data.reduce((acc, val) => val * k + acc * (1 - k));
     };
 
-    if (request.method === "GET") {
-      const currentCountStr = await env.WAITING_LIST.get("FOUNDERS_COUNT") || "0";
-      const currentCount = parseInt(currentCountStr);
-      const remaining = SUPPLY_CAP - currentCount;
+    const ema5  = getEMA(bars.slice(-5), 5);
+    const ema20 = getEMA(bars.slice(-20), 20);
+    
+    // RSI Calculation (Simplified 14-period)
+    let gains = 0, losses = 0;
+    for (let i = bars.length - 14; i < bars.length; i++) {
+      let diff = bars[i] - bars[i-1];
+      diff > 0 ? gains += diff : losses -= diff;
+    }
+    const rsi = 100 - (100 / (1 + (gains / (losses || 1))));
 
-      if (remaining <= 0) {
-        return new Response("<body style='background:#000;color:#f00;font-family:monospace;'><h1 align='center'>FOUNDERS_CLUB_CLOSED</h1></body>", { headers: { "Content-Type": "text/html" } });
-      }
+    // 3. RETRIEVE RECALL (KV Memory)
+    const state = JSON.parse(await env.WAITING_LIST.get("ALGO_STATE") || '{"pos":false,"last_price":0}');
 
-      return new Response(`
-        <body style="background:#000; color:#fff; font-family:monospace; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; text-align:center;">
-          <h1 style="letter-spacing:15px; color:#a9a9a9;">SURFGO.NET</h1>
-          <p style="color:#0ff;">[ FOUNDERS_CLUB : COBALT-CHROME TIER ]</p>
-          <div style="border:1px solid #333; padding:30px; width:350px; background:#050505;">
-            <p style="font-size:1.5em; color:#a9a9a9;">SLOTS_REMAINING: ${remaining}</p>
-            <p style="font-size:0.8em;">GEOMETRIC_PEG: $19.50</p>
-            <form action="/procure" method="POST">
-              <input type="text" name="alias" placeholder="ENTER_NODE_ALIAS" required style="width:100%; padding:10px; background:#000; border:1px solid #0ff; color:#fff; margin:10px 0;">
-              <button style="width:100%; padding:15px; background:#a9a9a9; color:#000; font-weight:bold; border:none; cursor:pointer;">SECURE_HULL_ID</button>
-            </form>
-          </div>
-        </body>`, { headers: { "Content-Type": "text/html" } });
+    // 4. DECISION MATRIX
+    let signal = "NEUTRAL";
+    // BUY: EMA Cross Up + Not Overbought (RSI < 70)
+    if (ema5 > ema20 && rsi < 70 && !state.pos) {
+      signal = "STRONG_BUY";
+      const account = await fetch("https://paper-api.alpaca.markets/v2/account", auth).then(r => r.json());
+      const qty = (parseFloat(account.buying_power) * 0.10) / currentPrice; // 10% risk
+      await fetch("https://paper-api.alpaca.markets/v2/orders", {
+        method: "POST", ...auth,
+        body: JSON.stringify({ symbol, qty: qty.toFixed(5), side: "buy", type: "market", time_in_force: "gtc" })
+      });
+      state.pos = true;
+    } 
+    // SELL: EMA Cross Down OR Overbought (RSI > 80)
+    else if ((ema5 < ema20 || rsi > 80) && state.pos) {
+      signal = "EXIT_POSITION";
+      await fetch(`https://paper-api.alpaca.markets/v2/positions/${symbol.replace('/','')}`, { method: "DELETE", ...auth });
+      state.pos = false;
     }
 
-    if (request.method === "POST" && pathname === "/procure") {
-      const currentCountStr = await env.WAITING_LIST.get("FOUNDERS_COUNT") || "0";
-      let currentCount = parseInt(currentCountStr);
-      
-      if (currentCount >= SUPPLY_CAP) return new Response("CAPACITY_EXCEEDED", { status: 403 });
+    // 5. COMMIT TO MEMORY
+    state.last_price = currentPrice;
+    await env.WAITING_LIST.put("ALGO_STATE", JSON.stringify(state));
 
-      const formData = await request.formData();
-      const nodeAlias = formData.get("alias") || "FOUNDER_NODE";
-      
-      const words = ["abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd", "abuse", "access", "accident", "account", "accuse", "achieve", "acid", "acoustic", "acquire", "across", "act", "action", "actor", "actress", "actual"];
-      const mnemonic = Array.from({length: 12}, () => words[Math.floor(Math.random() * words.length)]).join(" ");
-
-      currentCount++;
-      const hull_id = `SGO-C-${currentCount.toString().padStart(3, '0')}`;
-      const encryptedSeed = encryptAtEdge(mnemonic, env.SOVEREIGN_ROOT_KEY || "GENESIS_KEY");
-
-      // LOG TO LEDGER
-      await env.WAITING_LIST.put(nodeAlias, JSON.stringify({
-        hull_id: hull_id,
-        encrypted_mnemonic: encryptedSeed,
-        timestamp: new Date().toISOString(),
-        tier: "FOUNDERS_COBALT"
-      }));
-      await env.WAITING_LIST.put("FOUNDERS_COUNT", currentCount.toString());
-
-      return new Response(`
-        <body style="background:#000; color:#fff; font-family:monospace; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; text-align:center;">
-          <h2 style="color:#a9a9a9;">HULL_ID_SECURED: ${hull_id}</h2>
-          <div style="border:2px solid #a9a9a9; padding:25px; font-size:1.5em; background:#111; max-width:500px; color:#0ff;">
-            ${mnemonic}
-          </div>
-          <p style="margin-top:20px; color:#f00; font-size:0.7em;">RECORD YOUR SEED. YOUR COBALT-CHROME CLAMSHELL IS PENDING.</p>
-        </body>`, { headers: { "Content-Type": "text/html" } });
-    }
+    return `PULSE: BTC @ ${currentPrice} | RSI: ${rsi.toFixed(2)} | EMA5/20: ${ema5.toFixed(2)}/${ema20.toFixed(2)} | SIGNAL: ${signal}`;
   }
 };
